@@ -20,11 +20,13 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(BASE_DIR, "Bank_data.csv")
 KMEANS_PATH = os.path.join(BASE_DIR, "models", "kmeans.pkl")
+LOAN_MODEL_PATH = os.path.join(BASE_DIR, "Loan_Predictions.pkl")
 
 # --- GLOBAL MODELS & SCALERS (Initialized at Startup) ---
 MODELS = {
     "kmeans": None,
-    "scaler": RobustScaler() # We store the scaler here to reuse it
+    "scaler": RobustScaler(), # We store the scaler here to reuse it
+    "loan_model": None
 }
 
 CACHE = {
@@ -57,6 +59,7 @@ def load_and_process_data():
     # 1. Load Data & KMeans Model
     df = pd.read_csv(CSV_PATH)
     MODELS["kmeans"] = joblib.load(KMEANS_PATH)
+    MODELS["loan_model"] = joblib.load(LOAN_MODEL_PATH)
     
     features = [
         'Age', 'Gender', 'Account Type', 'Relationship_Tenure_Years',
@@ -158,3 +161,57 @@ async def predict_user_risk(user_data: dict = Body(...)):
     except Exception as e:
         print(f"Prediction Error: {e}") 
         return {"success": False, "predictedRisk": "Data Error"}
+
+@app.post("/api/predict-loan")
+async def predict_loan_amount(user_data: dict = Body(...)):
+    """
+    Predicts loan amount using the XGBRegressor model.
+    """
+    if MODELS["loan_model"] is None:
+        return {"success": False, "predictedLoan": "Model Offline"}
+
+    try:
+        df = pd.DataFrame([user_data]).fillna(0)
+        
+        # Features for loan model: ['Age', 'Employment Type_Business', 'Employment Type_Freelancer', 'Employment Type_Salaried', 'Employment Type_Self-Employed', 'Residential Status_Company Provided', 'Residential Status_Owned', 'Residential Status_Rented', 'Residence Type_Apartment', 'Residence Type_Independent House', 'Residence Type_Villa', 'CIBIL_Score', 'Relationship_Tenure_Years', 'Years_in_Current_City', 'Years_in_Current_Job', 'Insurance Premiums', 'AnnualIncome', 'Loan Type_Auto', 'Loan Type_Mortgage', 'Loan Type_Personal', 'Loan Type_other']
+        
+        # Assume user_data has 'Employment Type', 'Residential Status', 'Residence Type', 'Loan Type' as strings
+        # One-hot encode them
+        if 'Employment Type' in df.columns:
+            df = pd.get_dummies(df, columns=['Employment Type'], prefix='Employment Type')
+        if 'Residential Status' in df.columns:
+            df = pd.get_dummies(df, columns=['Residential Status'], prefix='Residential Status')
+        if 'Residence Type' in df.columns:
+            df = pd.get_dummies(df, columns=['Residence Type'], prefix='Residence Type')
+        if 'Loan Type' in df.columns:
+            df = pd.get_dummies(df, columns=['Loan Type'], prefix='Loan Type')
+        
+        # Align to model's feature_names_in_
+        df_final = df.reindex(columns=MODELS["loan_model"].feature_names_in_, fill_value=0)
+        
+        # Predict (no scaling needed for XGBoost typically)
+        prediction = MODELS["loan_model"].predict(df_final)[0]
+        
+        # Generate recommendations based on predicted loan amount
+        recommendations = []
+        if prediction > 500000:  # Assuming high loan amount
+            recommendations = [
+                {"Scheme_Name": "High Value Loan Support", "Benefits": ["Extended repayment terms", "Lower interest rates for large loans"]},
+                {"Scheme_Name": "Premium Banking Services", "Benefits": ["Dedicated loan manager", "Priority processing"]}
+            ]
+        elif prediction > 200000:
+            recommendations = [
+                {"Scheme_Name": "Medium Loan Assistance", "Benefits": ["Flexible EMI options", "Quick approval process"]},
+                {"Scheme_Name": "Savings Account Boost", "Benefits": ["Higher interest on savings", "Loan-linked rewards"]}
+            ]
+        else:
+            recommendations = [
+                {"Scheme_Name": "Small Loan Scheme", "Benefits": ["No collateral required", "Fast track approval"]},
+                {"Scheme_Name": "Basic Credit Building", "Benefits": ["Credit score improvement tips", "Low-interest personal loans"]}
+            ]
+        
+        return {"success": True, "predictedLoanAmount": float(prediction), "recommendations": recommendations}
+        
+    except Exception as e:
+        print(f"Loan Prediction Error: {e}") 
+        return {"success": False, "predictedLoanAmount": "Data Error"}
